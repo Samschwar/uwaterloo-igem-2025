@@ -1,1 +1,136 @@
+import numpy as np
+from scipy.optimize import curve_fit
+from scipy.integrate import solve_ivp, simps
+import matplotlib.pyplot as plt
 
+# ---------------------------
+# 1. Simulated Time-Snapshot Data (replace with real measurements)
+# ---------------------------
+time_snapshots = np.array([0, 12, 24, 36, 48])  # hours
+D_snapshots = np.array([0.005, 0.006, 0.007, 0.0085, 0.009])  # Diffusivity in mm²/hr
+h_snapshots = np.array([0.7, 0.8, 0.9, 0.95, 1.0])            # Half-thickness in mm
+
+# ---------------------------
+# 2. Exponential Fit: f(t) = a - b * exp(-c * t)
+# ---------------------------
+def exp_model(t, a, b, c):
+    return a - b * np.exp(-c * t)
+
+# Fit exponential model to D(t)
+popt_D, _ = curve_fit(exp_model, time_snapshots, D_snapshots, bounds=(0, np.inf))
+def D(t): return exp_model(t, *popt_D)
+
+# Fit exponential model to h(t)
+popt_h, _ = curve_fit(exp_model, time_snapshots, h_snapshots, bounds=(0, np.inf))
+def h(t): return exp_model(t, *popt_h)
+
+# Derivative of h(t)
+def dhdt(t):
+    a, b, c = popt_h
+    return b * c * np.exp(-c * t)
+
+# Constant averages for comparison
+D_const = np.mean(D_snapshots)
+h_const = np.mean(h_snapshots)
+
+# ---------------------------
+# 3. Discretization Parameters
+# ---------------------------
+N = 100  # spatial grid points
+y = np.linspace(-1, 1, N)
+dy = y[1] - y[0]
+c0 = 1.0  # initial concentration
+c_init = np.ones(N) * c0
+c_init[0] = 0
+c_init[-1] = 0
+
+# ---------------------------
+# 4. Finite Difference RHS of PDE (time-varying D and h)
+# ---------------------------
+def pde_rhs(t, c):
+    D_t = D(t)
+    h_t = h(t)
+    dh_t = dhdt(t)
+
+    d2c_dy2 = np.zeros_like(c)
+    dc_dy = np.zeros_like(c)
+
+    # Centered finite difference
+    d2c_dy2[1:-1] = (c[2:] - 2 * c[1:-1] + c[:-2]) / dy**2
+    dc_dy[1:-1] = (c[2:] - c[:-2]) / (2 * dy)
+
+    # Boundary values remain zero
+    d2c_dy2[0] = d2c_dy2[-1] = 0
+    dc_dy[0] = dc_dy[-1] = 0
+
+    dc_dt = D_t / h_t**2 * d2c_dy2 + (dh_t / h_t) * y * dc_dy
+    return dc_dt
+
+# Constant D and h version (for comparison)
+def pde_rhs_const(t, c):
+    d2c_dy2 = np.zeros_like(c)
+    d2c_dy2[1:-1] = (c[2:] - 2 * c[1:-1] + c[:-2]) / dy**2
+    dc_dt = D_const / h_const**2 * d2c_dy2
+    return dc_dt
+
+# ---------------------------
+# 5. Solve ODE System
+# ---------------------------
+t_span = (0, 48)  # hours
+t_eval = np.linspace(*t_span, 500)
+
+# Solve using time-varying D and h
+sol_var = solve_ivp(pde_rhs, t_span, c_init, t_eval=t_eval, method='RK45', rtol=1e-6)
+
+# Solve using constant average D and h
+sol_const = solve_ivp(pde_rhs_const, t_span, c_init, t_eval=t_eval, method='RK45', rtol=1e-6)
+
+# ---------------------------
+# 6. Compute Q_dot(t) using Simpson’s Rule
+# ---------------------------
+def compute_Qdot(solution, rhs_func):
+    Q_dot = np.zeros_like(solution.t)
+    for i, t in enumerate(solution.t):
+        dcdt = rhs_func(t, solution.y[:, i])
+        Q_dot[i] = -simps(dcdt, y)
+    return Q_dot
+
+Q_dot_var = compute_Qdot(sol_var, pde_rhs)
+Q_dot_const = compute_Qdot(sol_const, pde_rhs_const)
+
+# ---------------------------
+# 7. Plotting Results
+# ---------------------------
+plt.figure(figsize=(14, 6))
+
+# Plot Q_dot(t)
+plt.subplot(1, 2, 1)
+plt.plot(sol_var.t, Q_dot_var, label='Time-varying $D(t), h(t)$', lw=2)
+plt.plot(sol_const.t, Q_dot_const, '--', label='Constant D, h (avg)', lw=2)
+plt.xlabel('Time (hours)')
+plt.ylabel('Release Rate $\\dot{Q}(t)$')
+plt.title('Release Rate Comparison')
+plt.legend()
+plt.grid(True)
+
+# Plot concentration profiles at start and end
+plt.subplot(1, 2, 2)
+plt.plot(y, sol_var.y[:, 0], label='t = 0 h')
+plt.plot(y, sol_var.y[:, -1], label='t = 48 h, var D,h')
+plt.plot(y, sol_const.y[:, -1], '--', label='t = 48 h, const D,h')
+plt.xlabel('Normalized Position $y$')
+plt.ylabel('Concentration $c(y,t)$')
+plt.title('Concentration Profiles')
+plt.legend()
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+# ---------------------------
+# 8. Print fitted model parameters
+# ---------------------------
+print("Fitted D(t): a=%.6f, b=%.6f, c=%.6f" % tuple(popt_D))
+print("Fitted h(t): a=%.6f, b=%.6f, c=%.6f" % tuple(popt_h))
+print("Average D: %.6f mm²/hr" % D_const)
+print("Average h: %.6f mm" % h_const)
