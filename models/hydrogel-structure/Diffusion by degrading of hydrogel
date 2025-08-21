@@ -1,0 +1,170 @@
+#C(x, t)	Drug concentration at position x and time t (mg/cm³)
+#D	Diffusion coefficient (cm²/hr)
+#Cs(t)	Source term (drug released over time from degradation)
+#μ (mu)	Decay rate of source term
+#A, B	Constants defining μ's sensitivity to degradation agent
+#CGA	Concentration of degradation agent (% v/v)
+#Δx, Δt	Spatial and temporal discretization steps
+#C[i]	Concentration at spatial index i
+#C_new[i]	Updated concentration (used to avoid overwriting values)
+#Cs[n]	Source concentration at time step n
+#d2C_dx2	Second spatial derivative (approximates diffusion)
+#dCs_dt	Rate of change of the source term at time step n
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# --- Parameters ---
+L = 1.0         # cm (length of slab)
+N = 100         # Number of spatial nodes
+dx = L / (N - 1)
+x = np.linspace(0, L, N)
+
+T = 10.0        # hr (total simulation time)
+dt = 0.01       # hr (time step)
+nt = int(T / dt)  # number of time steps
+
+D = 1e-3        # Diffusion coefficient (cm^2/hr)
+
+# --- Source term parameters ---
+A = 0.5         # 1/hr (base degradation rate)
+B = 2.0         # 1/(% v/v)
+CGA = 0.5       # % (degradation agent concentration)
+mu = A * np.exp(-B * CGA)   # effective decay rate
+Cs0 = 1.0       # Initial source concentration (mg/cm³)
+
+# --- Initialize arrays ---
+C = np.zeros(N)        # Concentration at current time
+C_new = np.zeros(N)    # Placeholder for next time step
+Cs = np.zeros(nt)      # Source concentration over time
+Cs[0] = Cs0
+
+# --- Time stepping loop ---
+for n in range(1, nt):
+    
+    #The empirical release function is given by:
+    # 1. Update source term using exponential decay
+    Cs[n] = Cs0 * np.exp(-mu * n * dt)
+
+    #dCs/dt: Time-dependent source term (degradation-driven release)
+    # 2. Approximate dCs/dt using backward difference
+    dCs_dt = (Cs[n] - Cs[n - 1]) / dt
+
+    
+    # 3. Update concentration using #Finite Difference Method (FDM)
+    for i in range(1, N - 1):
+        
+        #Second spatial derivative (approximates diffusion)
+        # Central difference for spatial second derivative
+        d2C_dx2 = (C[i+1] - 2*C[i] + C[i-1]) / dx**2
+        
+        #We are solving the 1D diffusion-reaction equation with a time-dependent source: ∂C/∂t = D ∇²C + dCs/dt
+        # Forward Euler time integration with source
+        C_new[i] = C[i] + dt * (D * d2C_dx2 + dCs_dt)
+    
+    # 4. Apply boundary conditions
+    C_new[0] = 0
+    C_new[-1] = 0
+
+    # 5. Update solution
+    C[:] = C_new[:]
+#**************************************************************************************
+# --- Plot results ---This first plot does not correlate to anything in the paper
+plt.plot(x, C, label=f't = {T} hr')
+plt.xlabel('Position (cm)')
+plt.ylabel('Concentration C(x, t)')
+plt.title('Drug Diffusion with Degradation Source Term')
+plt.legend()
+plt.grid()
+plt.show()
+
+#************Trying to replicate plots in the paper
+
+#**************************************************************************************
+#1 --- Check max concentration and normalize ---
+C_max = np.max(C)
+if C_max > 0:
+    C_percent = (C / C_max) * 100  # Normalize to percent of max
+else:
+    C_percent = np.zeros_like(C)
+    print("Warning: Maximum concentration is zero. No drug release occurred.")
+
+# --- Plot drug percentage vs. radius ---
+plt.figure()
+plt.plot(x, C_percent, color='green', label='Drug % at t = 10 hr')
+plt.xlabel('Radius (cm)')
+plt.ylabel('Drug Concentration (%)')
+plt.title('Drug Concentration vs. Radius')
+plt.grid(True)
+plt.legend()
+plt.show()
+
+#What This Does:
+#C / np.max(C) scales the drug concentration to a range of 0–1.
+
+#Multiplying by 100 converts it to a percentage.
+
+#x is interpreted as the radius (cm) from the center to the edge of the slab.
+
+#The plot shows how much drug (in % of the max) is present at each radius after 10 hours.
+
+#**************************************************************************************
+#2 --- Time axis in hours of the day ---
+time_hours = np.arange(0, T, dt)  # From 0 to 10 hours, in 0.01 hr steps
+release_rate = np.zeros(nt)       # Store dCs/dt values
+
+# Recalculate release rate array from Cs
+release_rate[0] = 0  # dCs/dt is undefined at t=0
+for n in range(1, nt):
+    release_rate[n] = (Cs[n] - Cs[n - 1]) / dt
+    
+# Convert time from hours (0–10) to "time of day"
+# Let's say simulation starts at 8:00 AM
+start_hour = 8  # 8 AM
+time_of_day = start_hour + time_hours
+
+# Plot release vs time of day
+plt.figure()
+plt.plot(time_of_day, release_rate, color='orange', label='dCs/dt (drug release rate)')
+plt.xlabel('Time of Day (hours)')
+plt.ylabel('Release Rate (mg/cm³/hr)')
+plt.title('Drug Release vs. Time of Day')
+plt.grid(True)
+plt.legend()
+plt.xticks(np.arange(start_hour, start_hour + T + 1, 1))  # Hourly ticks
+plt.show()
+
+#**************************************************************************************
+#3
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
+from sklearn.metrics import r2_score
+
+# --- Sample data: CGA vs D (example values) ---
+CGA_values = np.array([0.1, 0.2, 0.3, 0.4, 0.5])  # CGA concentrations (%)
+D_values = np.array([2.0e-3, 1.6e-3, 1.2e-3, 0.9e-3, 0.7e-3])  # Diffusion constants (cm²/hr)
+
+# --- Fitting function: exponential decay model ---
+def exp_decay(CGA, a, b, c):
+    return a * np.exp(-b * CGA) + c
+
+# Fit the model
+popt, _ = curve_fit(exp_decay, CGA_values, D_values)
+D_fit = exp_decay(CGA_values, *popt)
+
+# Compute R²
+r2 = r2_score(D_values, D_fit)
+
+# --- Plotting ---
+plt.figure(figsize=(7,5))
+plt.scatter(CGA_values, D_values * 1e3, color='blue', label='Experimental D (×10⁻³)')
+plt.plot(CGA_values, D_fit * 1e3, 'r--', label=f'Fit: $D = a e^{{-b \\cdot CGA}} + c$\n$R^2$ = {r2:.2f}')
+
+plt.xlabel('CGA Concentration (%)')
+plt.ylabel('Diffusion Coefficient D (×10⁻³ cm²/hr)')
+plt.title('Diffusion Coefficient vs. CGA Concentration')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
